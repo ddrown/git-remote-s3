@@ -16,6 +16,8 @@ from botocore.exceptions import (
 import re
 import tempfile
 import os
+import concurrent.futures
+from threading import Lock
 from git_remote_s3 import git
 from .enums import UriScheme
 from .common import parse_git_url
@@ -69,7 +71,9 @@ class S3Remote:
         self.bucket = bucket
         self.mode = None
         self.fetched_refs = []
+        self.fetched_refs_lock = Lock()  # Lock for thread-safe access to fetched_refs
         self.push_cmds = []
+        self.fetch_cmds = []  # Store fetch commands for batch processing
 
     def list_refs(self, *, bucket: str, prefix: str) -> list:
         res = self.s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
@@ -95,8 +99,9 @@ class S3Remote:
 
     def cmd_fetch(self, args: str):
         sha, ref = args.split(" ")[1:]
-        if sha in self.fetched_refs:
-            return
+        with self.fetched_refs_lock:
+            if sha in self.fetched_refs:
+                return
         logger.info(f"fetch {sha} {ref}")
         try:
             temp_dir = tempfile.mkdtemp(prefix="git_remote_s3_fetch_")
@@ -110,7 +115,8 @@ class S3Remote:
             logger.info(f"fetched {temp_dir}/{sha}.bundle {ref}")
 
             git.unbundle(folder=temp_dir, sha=sha, ref=ref)
-            self.fetched_refs.append(sha)
+            with self.fetched_refs_lock:
+                self.fetched_refs.append(sha)
         except ClientError as e:
             if e.response["Error"]["Code"] == "AccessDenied":
                 raise NotAuthorizedError("GetObject", self.bucket)
@@ -312,9 +318,34 @@ class S3Remote:
         sys.stdout.write("\n")
         sys.stdout.flush()
 
+    def process_fetch_cmds(self, cmds):
+        """Process fetch commands in parallel using a thread pool.
+
+        Args:
+            cmds (list): List of fetch commands to process
+        """
+        if not cmds:
+            return
+
+        logger.info(f"Processing {len(cmds)} fetch commands in parallel")
+
+        # Use a thread pool to process fetch commands in parallel
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Submit all fetch commands to the thread pool
+            futures = [executor.submit(self.cmd_fetch, cmd) for cmd in cmds]
+
+            # Wait for all fetch commands to complete
+            concurrent.futures.wait(futures)
+
+        logger.info(f"Completed processing {len(cmds)} fetch commands in parallel")
+
     def process_cmd(self, cmd: str):  # noqa: C901
         if cmd.startswith("fetch"):
-            self.cmd_fetch(cmd.strip())
+            if self.mode != Mode.FETCH:
+                self.mode = Mode.FETCH
+                self.fetch_cmds = []
+            self.fetch_cmds.append(cmd.strip())
+            # Don't process fetch commands immediately, collect them for batch processing
         elif cmd.startswith("push"):
             if self.mode != Mode.PUSH:
                 self.mode = Mode.PUSH
@@ -337,6 +368,10 @@ class S3Remote:
                 for res in push_res:
                     sys.stdout.write(res)
                 self.push_cmds = []
+            elif self.mode == Mode.FETCH and self.fetch_cmds:
+                logger.info(f"fetching {len(self.fetch_cmds)} refs in parallel")
+                self.process_fetch_cmds(self.fetch_cmds)
+                self.fetch_cmds = []
             sys.stdout.write("\n")
             sys.stdout.flush()
         else:

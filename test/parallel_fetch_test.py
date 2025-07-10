@@ -1,10 +1,7 @@
-import botocore.client
-from mock import patch, MagicMock, call
+from mock import patch
 from io import BytesIO
 from git_remote_s3 import S3Remote, UriScheme
-import tempfile
-import datetime
-import concurrent.futures
+
 import threading
 
 SHA1 = "c105d19ba64965d2c9d3d3246e7269059ef8bb8a"
@@ -38,8 +35,8 @@ def test_process_fetch_cmds_single_command(session_client_mock, unbundle_mock):
     # Process a single fetch command
     s3_remote.process_fetch_cmds([f"fetch {SHA1} refs/heads/{BRANCH}"])
 
-    # Verify S3 get_object was called once
-    session_client_mock.return_value.get_object.assert_called_once()
+    # Verify S3 download_file was called once
+    session_client_mock.return_value.download_file.assert_called_once()
     unbundle_mock.assert_called_once()
 
     # Verify the fetched_refs list contains the SHA
@@ -63,8 +60,8 @@ def test_process_fetch_cmds_multiple_commands(session_client_mock, unbundle_mock
     ]
     s3_remote.process_fetch_cmds(fetch_cmds)
 
-    # Verify S3 get_object was called for each command
-    assert session_client_mock.return_value.get_object.call_count == 3
+    # Verify S3 download_file was called for each command
+    assert session_client_mock.return_value.download_file.call_count == 3
     assert unbundle_mock.call_count == 3
 
     # Verify all SHAs are in the fetched_refs list
@@ -96,7 +93,7 @@ def test_process_fetch_cmds_uses_thread_pool(session_client_mock, unbundle_mock)
     s3_remote.process_fetch_cmds(fetch_cmds)
 
     # Verify all commands were processed
-    assert session_client_mock.return_value.get_object.call_count == 3
+    assert session_client_mock.return_value.download_file.call_count == 3
     assert unbundle_mock.call_count == 3
 
     # Verify all SHAs are in the fetched_refs list

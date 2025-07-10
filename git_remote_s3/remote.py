@@ -13,23 +13,34 @@ from botocore.exceptions import (
     NoCredentialsError,
     UnknownCredentialError,
 )
+from boto3.s3.transfer import TransferConfig
 import re
 import tempfile
 import os
 import concurrent.futures
 from threading import Lock
+
+import botocore.exceptions
 from git_remote_s3 import git
 from .enums import UriScheme
 from .common import parse_git_url
 import botocore
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 if "remote" in __name__:
     # Check for early verbosity via environment variable
-    verbose_env = os.environ.get('GIT_REMOTE_S3_VERBOSE', '').lower() in ('1', 'true', 'yes')
+    verbose_env = os.environ.get("GIT_REMOTE_S3_VERBOSE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     log_level = logging.INFO if verbose_env else logging.ERROR
-    logging.basicConfig(level=log_level, stream=sys.stderr,
-                        format='%(name)s: %(levelname)s: %(message)s')
+    logging.basicConfig(
+        level=log_level,
+        stream=sys.stderr,
+        format="%(name)s: %(levelname)s: %(message)s",
+    )
 
 
 class BucketNotFoundError(Exception):
@@ -107,16 +118,38 @@ class S3Remote:
             if sha in self.fetched_refs:
                 return
         logger.info(f"fetch {sha} {ref}")
+        temp_dir: Optional[str] = None
         try:
             temp_dir = tempfile.mkdtemp(prefix="git_remote_s3_fetch_")
-            obj = self.s3.get_object(
-                Bucket=self.bucket, Key=f"{self.prefix}/{ref}/{sha}.bundle"
-            )
-            data = obj["Body"].read()
+            bundle_path = f"{temp_dir}/{sha}.bundle"
 
-            with open(f"{temp_dir}/{sha}.bundle", "wb") as f:
-                f.write(data)
-            logger.info(f"fetched {temp_dir}/{sha}.bundle {ref}")
+            # Use TransferConfig for multipart download
+            # Multipart Threshold (64 MB):
+            # - Small enough to ensure multi-part downloads are used when necessary
+            # - Allows parallel downloading to begin early
+            # - Good balance between overhead and parallelization benefits
+            # Chunk Size (16 MB):
+            # - Large enough to minimize HTTP request overhead
+            # - Small enough to allow good parallelization (500 MB file = ~31 chunks)
+            # - Provides reasonable progress granularity for monitoring
+            # - Works well with typical network conditions
+            MB = 1024**2
+            config = TransferConfig(
+                multipart_threshold=25 * MB,  # 25MB threshold for multipart
+                multipart_chunksize=16 * MB,  # Size of each part
+                use_threads=True,  # Enable threading
+                max_concurrency=8,  # Number of concurrent threads
+            )
+
+            # Download file using the TransferConfig
+            self.s3.download_file(
+                Bucket=self.bucket,
+                Key=f"{self.prefix}/{ref}/{sha}.bundle",
+                Filename=bundle_path,
+                Config=config,
+            )
+
+            logger.info(f"fetched {bundle_path} {ref}")
 
             git.unbundle(folder=temp_dir, sha=sha, ref=ref)
             with self.fetched_refs_lock:
@@ -126,8 +159,9 @@ class S3Remote:
                 raise NotAuthorizedError("GetObject", self.bucket)
             raise e
         finally:
-            if os.path.exists(f"{temp_dir}/{sha}.bundle"):
-                os.remove(f"{temp_dir}/{sha}.bundle")
+            if temp_dir is not None:
+                if os.path.exists(f"{temp_dir}/{sha}.bundle"):
+                    os.remove(f"{temp_dir}/{sha}.bundle")
 
     def remove_remote_ref(self, remote_ref: str) -> str:
         logger.info(f"Removing remote ref {remote_ref}")
@@ -171,7 +205,7 @@ class S3Remote:
             return f'error {remote_ref} "multiple bundles exists on server. Run git-s3 doctor to fix."?\n'  # noqa: B950
 
         remote_to_remove = contents[0]["Key"] if len(contents) == 1 else None
-
+        sha: Optional[str] = None
         try:
             sha = git.rev_parse(local_ref)
             if remote_to_remove:
@@ -206,7 +240,8 @@ class S3Remote:
                         ContentDisposition=f"attachment; filename=repo-{sha[:8]}.zip",
                     )
                 logger.info(
-                    f"pushed {temp_file_archive} to {self.prefix}/{remote_ref}/repo.zip with message {commit_msg}"
+                    f"pushed {temp_file_archive} to "
+                    + "{self.prefix}/{remote_ref}/repo.zip with message {commit_msg}"
                 )
 
             return f"ok {remote_ref}\n"
@@ -239,14 +274,14 @@ class S3Remote:
                 Body=ref,
             )
 
-    def get_bundles_for_ref(self, remote_ref: str) -> list[str]:
+    def get_bundles_for_ref(self, remote_ref: str) -> list[dict]:
         """Lists all the bundles for a given ref on the remote
 
         Args:
             remote_ref (str): the remote ref
 
         Returns:
-            list[str]: the list of bundle keys
+            list[dict]: the list of bundles objects
         """
 
         # We are not implementing pagination since there can be few objects (bundles)
@@ -444,7 +479,7 @@ def main():
     except Exception as e:
         logger.info(e)
         sys.stderr.write(
-            f"fatal: unknown error. Run with --verbose flag to get full log\n"
+            "fatal: unknown error. Run with --verbose flag to get full log\n"
         )
         sys.stderr.flush()
         sys.exit(1)

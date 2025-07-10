@@ -13,6 +13,7 @@ from botocore.exceptions import (
     NoCredentialsError,
     UnknownCredentialError,
 )
+from boto3.s3.transfer import TransferConfig
 import re
 import tempfile
 import os
@@ -120,14 +121,35 @@ class S3Remote:
         temp_dir: Optional[str] = None
         try:
             temp_dir = tempfile.mkdtemp(prefix="git_remote_s3_fetch_")
-            obj = self.s3.get_object(
-                Bucket=self.bucket, Key=f"{self.prefix}/{ref}/{sha}.bundle"
-            )
-            data = obj["Body"].read()
+            bundle_path = f"{temp_dir}/{sha}.bundle"
 
-            with open(f"{temp_dir}/{sha}.bundle", "wb") as f:
-                f.write(data)
-            logger.info(f"fetched {temp_dir}/{sha}.bundle {ref}")
+            # Use TransferConfig for multipart download
+            # Multipart Threshold (64 MB):
+            # - Small enough to ensure multi-part downloads are used when necessary
+            # - Allows parallel downloading to begin early
+            # - Good balance between overhead and parallelization benefits
+            # Chunk Size (16 MB):
+            # - Large enough to minimize HTTP request overhead
+            # - Small enough to allow good parallelization (500 MB file = ~31 chunks)
+            # - Provides reasonable progress granularity for monitoring
+            # - Works well with typical network conditions
+            MB = 1024**2
+            config = TransferConfig(
+                multipart_threshold=25 * MB,  # 25MB threshold for multipart
+                multipart_chunksize=16 * MB,  # Size of each part
+                use_threads=True,  # Enable threading
+                max_concurrency=8,  # Number of concurrent threads
+            )
+
+            # Download file using the TransferConfig
+            self.s3.download_file(
+                Bucket=self.bucket,
+                Key=f"{self.prefix}/{ref}/{sha}.bundle",
+                Filename=bundle_path,
+                Config=config,
+            )
+
+            logger.info(f"fetched {bundle_path} {ref}")
 
             git.unbundle(folder=temp_dir, sha=sha, ref=ref)
             with self.fetched_refs_lock:
@@ -218,7 +240,8 @@ class S3Remote:
                         ContentDisposition=f"attachment; filename=repo-{sha[:8]}.zip",
                     )
                 logger.info(
-                    f"pushed {temp_file_archive} to {self.prefix}/{remote_ref}/repo.zip with message {commit_msg}"
+                    f"pushed {temp_file_archive} to "
+                    + "{self.prefix}/{remote_ref}/repo.zip with message {commit_msg}"
                 )
 
             return f"ok {remote_ref}\n"
@@ -456,7 +479,7 @@ def main():
     except Exception as e:
         logger.info(e)
         sys.stderr.write(
-            f"fatal: unknown error. Run with --verbose flag to get full log\n"
+            "fatal: unknown error. Run with --verbose flag to get full log\n"
         )
         sys.stderr.flush()
         sys.exit(1)

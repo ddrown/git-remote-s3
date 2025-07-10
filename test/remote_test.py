@@ -478,7 +478,7 @@ def test_cmd_push_s3_zip_put_object_params(
 
     is_ancestor_mock.return_value = True
 
-    res = s3_remote.cmd_push(f"push refs/heads/{BRANCH}:refs/heads/{BRANCH}")
+    s3_remote.cmd_push(f"push refs/heads/{BRANCH}:refs/heads/{BRANCH}")
 
     put_object_calls = session_client_mock.return_value.put_object.call_args_list
     assert len(put_object_calls) == 2
@@ -527,26 +527,20 @@ def test_cmd_push_multiple_heads(
 @patch("boto3.Session.client")
 def test_cmd_fetch(session_client_mock, unbundle_mock):
     s3_remote = S3Remote(UriScheme.S3, None, "test_bucket", "test_prefix")
-    session_client_mock.return_value.get_object.return_value = {
-        "Body": BytesIO(MOCK_BUNDLE_CONTENT)
-    }
     s3_remote.cmd_fetch(f"fetch {SHA1} refs/heads/{BRANCH}")
 
     unbundle_mock.assert_called_once()
-    assert session_client_mock.return_value.get_object.call_count == 1
+    assert session_client_mock.return_value.download_file.call_count == 1
 
 
 @patch("git_remote_s3.git.unbundle")
 @patch("boto3.Session.client")
 def test_cmd_fetch_same_ref(session_client_mock, unbundle_mock):
     s3_remote = S3Remote(UriScheme.S3, None, "test_bucket", "test_prefix")
-    session_client_mock.return_value.get_object.return_value = {
-        "Body": BytesIO(MOCK_BUNDLE_CONTENT)
-    }
     s3_remote.cmd_fetch(f"fetch {SHA1} refs/heads/{BRANCH}")
     s3_remote.cmd_fetch(f"fetch {SHA1} refs/heads/{BRANCH}")
     unbundle_mock.assert_called_once()
-    assert session_client_mock.return_value.get_object.call_count == 1
+    assert session_client_mock.return_value.download_file.call_count == 1
 
 
 @patch("sys.stdout", new_callable=StringIO)

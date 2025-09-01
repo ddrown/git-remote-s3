@@ -6,6 +6,10 @@ It provides an implementation of a [git remote helper](https://git-scm.com/docs/
 
 It also provide an implementation of the [git-lfs custom transfer](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md) to enable pushing LFS managed files to the same S3 bucket used as remote.
 
+## Difference from upstream awslabs/git-remote-s3
+
+Use the environment variable `S3_BUCKET_ENDPOINT` for any S3 compatible service other than AWS.
+
 ## Table of Contents
 
 - [Installation](#installation)

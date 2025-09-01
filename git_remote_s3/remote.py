@@ -73,7 +73,7 @@ class S3Remote:
             self.session = boto3.Session(profile_name=profile)
         else:
             self.session = boto3.Session()
-        self.s3 = self.session.client("s3")
+        self.s3 = self.session.client("s3", endpoint_url=os.environ.get("S3_BUCKET_ENDPOINT"))
         try:
             self.s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         except ClientError as e:

@@ -77,7 +77,7 @@ class LFSProcess:
             session = boto3.Session()
         else:
             session = boto3.Session(profile_name=self.profile)
-        s3 = session.resource("s3")
+        s3 = session.resource("s3", endpoint_url=os.environ.get("S3_BUCKET_ENDPOINT"))
         self.s3_bucket = s3.Bucket(self.bucket)
 
     def upload(self, event: dict):

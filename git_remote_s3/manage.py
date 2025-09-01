@@ -5,6 +5,7 @@
 import boto3
 from .remote import parse_git_url
 import argparse
+import os
 import sys
 import uuid
 from botocore.exceptions import (
@@ -22,7 +23,7 @@ class Doctor:
         self.bucket = bucket
         self.prefix = prefix
         self.delete_bundle = delete_bundle
-        self.s3 = boto3.Session(profile_name=profile).client("s3")
+        self.s3 = boto3.Session(profile_name=profile).client("s3", endpoint_url=os.environ.get("S3_BUCKET_ENDPOINT"))
 
     def run(self):
         repos = self.analyze_repo()
@@ -149,7 +150,7 @@ class ManageBranch:
     def __init__(self, profile, bucket, prefix, branch) -> None:
         self.bucket = bucket
         self.prefix = prefix
-        self.s3 = boto3.Session(profile_name=profile).client("s3")
+        self.s3 = boto3.Session(profile_name=profile).client("s3", endpoint_url=os.environ.get("S3_BUCKET_ENDPOINT"))
         self.branch = branch
         if not self.get_branch_content():
             raise ValueError(f"Branch {self.branch} does not exist")
